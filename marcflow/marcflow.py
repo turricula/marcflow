@@ -136,8 +136,12 @@ class MarcFlow:
             conditions.append({'label': label, 'regex': regex, 'match': []})
         if not conditions:
             return False
-        combo = ' '.join(re.sub(pattern, '{}', condition).replace(
-            '!', ' not ').replace('&', ' and ').replace('|', ' or ').split())
+        combo = re.sub(pattern, '{}', condition)
+        symbols = (' ', '{', '}', '(', ')', '!', '&', '|')
+        if any([c not in symbols for c in combo]):
+            return False
+        combo = ' '.join(combo.replace('!', ' not ').replace(
+            '&', ' and ').replace('|', ' or ').split())
         if combo.count('{}') != len(conditions):
             return False
         try:
