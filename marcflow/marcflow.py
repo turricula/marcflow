@@ -12,6 +12,7 @@ class MarcFlow:
         self._combo = ''
         self._dedup = True
         self._json = True
+        self._ignorecase = False
         self._ANY = '_'
         self._IND = '*'
 
@@ -42,13 +43,18 @@ class MarcFlow:
         self._json = positive if isinstance(positive, bool) else True
         return self
 
+    def ignorecase(self, positive=False):
+        self._ignorecase = positive if isinstance(positive, bool) else False
+        return self
+
     def debug(self):
         return {
             'field': self._fields,
             'condition': self._conditions,
             'combo': self._combo,
             'dedup': self._dedup,
-            'json': self._json
+            'json': self._json,
+            'ignorecase': self._ignorecase
         }
 
     def marc(self, source):
@@ -111,7 +117,7 @@ class MarcFlow:
             if not f.strip(self._ANY) or not re.match(pattern, f):
                 self._fields = []
                 return False
-            self._fields.append(f.lower())
+            self._fields.append(f.lower() if self._ignorecase else f)
         return True
 
     def _set_condition(self, condition=''):
@@ -132,7 +138,8 @@ class MarcFlow:
                         '\t', '(').replace('\v', ')'))
                 except re.error:
                     return False
-            label = cond[:6].lower().replace(self._IND, ' ')
+            label = cond[:6].lower() if self._ignorecase else cond[:6]
+            label = label.replace(self._IND, ' ')
             conditions.append({'label': label, 'regex': regex, 'match': []})
         if not conditions:
             return False
@@ -238,7 +245,7 @@ class MarcFlow:
         for field in records:
             if len(f := field.strip()) < 19 or not f[:9].isdigit():
                 continue
-            tag = f[10:13]
+            tag = f[10:13].lower() if self._ignorecase else f[10:13]
             value = f[18:]
             if tag in ('FMT', 'LDR') or tag.startswith('00'):
                 self._extract_field(tag, value, values)
@@ -257,6 +264,8 @@ class MarcFlow:
     def _extract_field(self, label, value, values):
         if not value:
             return
+        if self._ignorecase:
+            label = label.lower()
         for i, field in enumerate(self._fields):
             if field == label:
                 values[i].append(value)
@@ -274,6 +283,8 @@ class MarcFlow:
     def _set_match(self, label, value):
         if not value:
             return
+        if self._ignorecase:
+            label = label.lower()
         for condition in self._conditions:
             for f, l in zip(condition['label'], label.lower()):
                 if f not in (self._ANY, l):
