@@ -1,8 +1,8 @@
-import json
 import re
 import xml.etree.ElementTree as Et
 from functools import partial
 from io import StringIO
+from json import dumps
 
 
 class MarcFlow:
@@ -10,6 +10,7 @@ class MarcFlow:
         self._fields = []
         self._conditions = []
         self._combo = ''
+        self._tags = {'field': [], 'condition': [], 'select': []}
         self._dedup = True
         self._json = True
         self._ignorecase = False
@@ -20,6 +21,7 @@ class MarcFlow:
         self._fields = []
         self._conditions = []
         self._combo = ''
+        self._tags = {'field': [], 'condition': [], 'select': []}
         if not isinstance(statement, str):
             return False
         statement = statement.lstrip().replace('\t', ' ')
@@ -33,7 +35,12 @@ class MarcFlow:
         tokens = statement.split(maxsplit=n)
         fields = tokens[:n]
         condition = '' if fields == tokens else tokens.pop()
-        return self._set_field(fields) and self._set_condition(condition)
+        if not self._set_field(fields) or not self._set_condition(condition):
+            return False
+        self._tags['field'] = [f[:3] for f in self._fields]
+        self._tags['condition'] = [c['label'][:3] for c in self._conditions]
+        self._tags['select'] = self._tags['field'] + self._tags['condition']
+        return True
 
     def dedup(self, positive=True):
         self._dedup = positive if isinstance(positive, bool) else True
@@ -185,18 +192,27 @@ class MarcFlow:
         tags = [tag for _, tag in sorted(entries.items())]
         fields = record[base + 1:].split('\x1E')
         for tag, field in zip(tags, fields):
+            if not self._is_hit(tag, self._tags['select']):
+                continue
+            fh = self._is_hit(tag, self._tags['field'])
+            ch = self._is_hit(tag, self._tags['condition'])
             if tag.startswith('00'):
-                self._extract_field(tag, field, values)
-                self._set_match(tag + self._ANY * 3, field)
+                if fh:
+                    self._extract_field(tag, field, values)
+                if ch:
+                    self._set_match(tag + self._ANY * 3, field)
                 continue
             subfields = field.split('\x1F')
             ind = subfields.pop(0)
-            self._extract_field(tag, field[2:], values)
-            self._extract_field(tag + self._IND, ind, values)
+            if fh:
+                self._extract_field(tag, field[2:], values)
+                self._extract_field(tag + self._IND, ind, values)
             for sf in subfields:
                 if len(sf) > 1:
-                    self._extract_field(tag + sf[:1], sf[1:], values)
-                    self._set_match(tag + ind + sf[:1], sf[1:])
+                    if fh:
+                        self._extract_field(tag + sf[:1], sf[1:], values)
+                    if ch:
+                        self._set_match(tag + ind + sf[:1], sf[1:])
         return self._get_result(values)
 
     def _parse_marcxml(self, record, nss):
@@ -213,9 +229,13 @@ class MarcFlow:
             tag = cf.attrib.get('tag', None)
             if not tag or not cf.text:
                 continue
+            if not self._is_hit(tag, self._tags['select']):
+                continue
             if tag != 'LDR' or (ldr and ldr.text != cf.text):
-                self._extract_field(tag, cf.text, values)
-                self._set_match(tag + self._ANY * 3, cf.text)
+                if self._is_hit(tag, self._tags['field']):
+                    self._extract_field(tag, cf.text, values)
+                if self._is_hit(tag, self._tags['condition']):
+                    self._set_match(tag + self._ANY * 3, cf.text)
         for df in record.findall('datafield', nss):
             if not (tag := df.attrib.get('tag', None)):
                 continue
@@ -223,12 +243,19 @@ class MarcFlow:
             ind2 = df.attrib.get('ind2', ' ')
             if len(tag + ind1 + ind2) != 5:
                 continue
-            self._extract_field(tag + self._IND, ind1 + ind2, values)
+            if not self._is_hit(tag, self._tags['select']):
+                continue
+            fh = self._is_hit(tag, self._tags['field'])
+            ch = self._is_hit(tag, self._tags['condition'])
+            if fh:
+                self._extract_field(tag + self._IND, ind1 + ind2, values)
             sfs = []
             for sf in df:
                 if (code := sf.attrib.get('code', None)) and sf.text:
-                    self._extract_field(tag + code, sf.text, values)
-                    self._set_match(tag + ind1 + ind2 + code, sf.text)
+                    if fh:
+                        self._extract_field(tag + code, sf.text, values)
+                    if ch:
+                        self._set_match(tag + ind1 + ind2 + code, sf.text)
                     sfs.append(code + sf.text)
             self._extract_field(tag, '\x1F' + '\x1F'.join(sfs), values)
         return self._get_result(values)
@@ -246,20 +273,42 @@ class MarcFlow:
             if len(f := field.strip()) < 19 or not f[:9].isdigit():
                 continue
             tag = f[10:13].lower() if self._ignorecase else f[10:13]
+            if not self._is_hit(tag, self._tags['select']):
+                continue
+            fh = self._is_hit(tag, self._tags['field'])
+            ch = self._is_hit(tag, self._tags['condition'])
             value = f[18:]
             if tag in ('FMT', 'LDR') or tag.startswith('00'):
-                self._extract_field(tag, value, values)
-                self._set_match(tag + self._ANY * 3, value)
+                if fh:
+                    self._extract_field(tag, value, values)
+                if ch:
+                    self._set_match(tag + self._ANY * 3, value)
                 continue
             ind = f[13:15]
-            self._extract_field(tag, value, values)
-            self._extract_field(tag + self._IND, ind, values)
+            if fh:
+                self._extract_field(tag, value, values)
+                self._extract_field(tag + self._IND, ind, values)
             subfields = value.split('$$')
             for sf in subfields:
                 if len(sf) > 1:
-                    self._extract_field(tag + sf[0], sf[1:], values)
-                    self._set_match(tag + ind + sf[0], sf[1:])
+                    if fh:
+                        self._extract_field(tag + sf[0], sf[1:], values)
+                    if ch:
+                        self._set_match(tag + ind + sf[0], sf[1:])
         return self._get_result(values)
+
+    def _is_hit(self, label, tags):
+        if label in tags:
+            return True
+        for tag in tags:
+            if self._ANY not in tag and tag != label:
+                continue
+            for t, l in zip(tag, label):
+                if t not in (self._ANY, l):
+                    break
+            else:
+                return True
+        return False
 
     def _extract_field(self, label, value, values):
         if not value:
@@ -274,7 +323,7 @@ class MarcFlow:
                 continue
             if field.endswith(self._ANY) and label.endswith(self._IND):
                 continue
-            for f, l in zip(field, label.lower()):
+            for f, l in zip(field, label):
                 if f not in (self._ANY, l):
                     break
             else:
@@ -286,7 +335,11 @@ class MarcFlow:
         if self._ignorecase:
             label = label.lower()
         for condition in self._conditions:
-            for f, l in zip(condition['label'], label.lower()):
+            if condition['label'] == label:
+                match = not (r := condition['regex']) or re.search(r, value)
+                condition['match'].append(match)
+                continue
+            for f, l in zip(condition['label'], label):
                 if f not in (self._ANY, l):
                     break
             else:
@@ -308,4 +361,4 @@ class MarcFlow:
             if len(v) > 1 and self._dedup:
                 v = list(dict.fromkeys(v))
             data[f] = v
-        return json.dumps(data, ensure_ascii=False)
+        return dumps(data, ensure_ascii=False)
