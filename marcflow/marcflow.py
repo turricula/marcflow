@@ -86,16 +86,14 @@ class MarcFlow:
         if isinstance(source, str):
             source = StringIO(source)
         try:
-            namespaces = {n[0]: n[1] for _, n in Et.iterparse(
-                source, events=['start-ns'])}
             source.seek(0)
             if not (root := Et.parse(source).getroot()):
                 yield None
-            if any(root.tag == f'{{{n}}}record' for n in namespaces.values()):
-                yield self._parse_marcxml(root, namespaces)
+            if root.tag.endswith('record'):
+                yield self._parse_marcxml(root)
             else:
-                for record in root.iterfind('record', namespaces):
-                    yield self._parse_marcxml(record, namespaces)
+                for record in root.iterfind('{*}record'):
+                    yield self._parse_marcxml(record)
         except Et.ParseError:
             yield None
 
@@ -215,17 +213,17 @@ class MarcFlow:
                         self._set_match(tag + ind + sf[:1], sf[1:])
         return self._get_result(values)
 
-    def _parse_marcxml(self, record, nss):
+    def _parse_marcxml(self, record):
         for condition in self._conditions:
             condition['match'] = []
         if not record:
             return None
         values = [[] for _ in range(len(self._fields))]
-        ldr = record.find('leader', nss)
-        if ldr and ldr.text:
+        ldr = record.find('{*}leader')
+        if ldr is not None and ldr.text:
             self._extract_field('LDR', ldr.text, values)
             self._set_match('LDR' + self._ANY * 3, ldr.text)
-        for cf in record.findall('controlfield', nss):
+        for cf in record.findall('{*}controlfield'):
             tag = cf.attrib.get('tag', None)
             if not tag or not cf.text:
                 continue
@@ -236,7 +234,7 @@ class MarcFlow:
                     self._extract_field(tag, cf.text, values)
                 if self._is_hit(tag, self._tags['condition']):
                     self._set_match(tag + self._ANY * 3, cf.text)
-        for df in record.findall('datafield', nss):
+        for df in record.findall('{*}datafield'):
             if not (tag := df.attrib.get('tag', None)):
                 continue
             ind1 = df.attrib.get('ind1', ' ')
